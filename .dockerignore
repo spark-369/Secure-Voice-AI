@@ -1,0 +1,19 @@
+# Keep build contexts lean (single root context is used by all images)
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/node_modules
+**/dist
+**/.git
+**/.gitignore
+**/.venv
+**/venv
+**/.env
+**/.env.*
+!**/.env.example
+**/*.db
+**/*.sqlite3
+**/data/chroma/
+**/.DS_Store
+**/README.md

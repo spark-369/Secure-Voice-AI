@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Environment / secrets (backend/.env is the single committed dev config)
+.env
+.env.*
+!backend/.env
+
+# Local runtime data (ChromaDB persistence, SQLite smoke-test DBs)
+data/
+*.db
+*.sqlite3
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

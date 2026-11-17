@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# SecureVoice AI — LOCAL DEVELOPMENT infrastructure ONLY.
+#
+# Runs just PostgreSQL + Redis (ports exposed to the host). The FastAPI app,
+# the Celery worker and the Vite dev server run natively on your machine with
+# hot reload — see the README (Quickstart) for the workflow.
+#
+# All configuration lives in the single env file:  backend/.env
+# (the Postgres service reads POSTGRES_USER/PASSWORD/DB from it; extra app
+#  variables passed into the container are simply ignored by the image).
+# The production-style app containers and the Nginx tier are intentionally
+# NOT part of the local development loop.
+# ---------------------------------------------------------------------------
+name: securevoice-ai
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    env_file:
+      - backend/.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # $$ defers expansion to runtime, inside the container (env_file vars).
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-securevoice}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

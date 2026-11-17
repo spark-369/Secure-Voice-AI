@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Slim scrollbars for the chat transcript pane */
+.scrollbar-slim::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-slim::-webkit-scrollbar-thumb {
+  background-color: rgb(51 65 85 / 0.8);
+  border-radius: 9999px;
+}
+.scrollbar-slim::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Hide scrollbars on horizontally scrollable mobile navs */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Android bottom-sheet entrance on mobile, modal pop on desktop */
+@keyframes sheet-up {
+  from {
+    transform: translateY(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+@keyframes modal-pop {
+  from {
+    transform: scale(0.96);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.animate-sheet-up {
+  animation: sheet-up 0.25s ease-out;
+}
+@media (min-width: 640px) {
+  .animate-sheet-up {
+    animation: modal-pop 0.2s ease-out;
+  }
+}
+
