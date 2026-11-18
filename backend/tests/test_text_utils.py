@@ -1,7 +1,7 @@
 """Unit tests for the dependency-free text helpers.
 
 Run from ``backend/``:  python -m pytest -q
-These tests intentionally avoid the ML stack (torch/transformers/chromadb).
+These tests intentionally avoid the Ollama server and the database.
 """
 from app.utils.text import (
     build_chat_messages,

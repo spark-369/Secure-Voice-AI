@@ -1,4 +1,4 @@
-"""Engine and session factory for PostgreSQL (SQLite fallback for local tests)."""
+"""Engine and session factory for the local PostgreSQL database."""
 from __future__ import annotations
 
 from sqlalchemy import create_engine, inspect, text
@@ -9,19 +9,14 @@ from app.db.base import Base
 
 settings = get_settings()
 
-_engine_kwargs: dict = {
-    "pool_pre_ping": True,
-    "echo": settings.DB_ECHO,
-    "future": True,
-}
-if settings.DATABASE_URL.startswith("sqlite"):
-    # SQLite (used for local smoke tests) rejects QueuePool sizing options.
-    _engine_kwargs["connect_args"] = {"check_same_thread": False}
-else:
-    _engine_kwargs["pool_size"] = settings.DB_POOL_SIZE
-    _engine_kwargs["max_overflow"] = settings.DB_MAX_OVERFLOW
-
-engine = create_engine(settings.DATABASE_URL, **_engine_kwargs)
+engine = create_engine(
+    settings.DATABASE_URL,
+    pool_pre_ping=True,
+    echo=settings.DB_ECHO,
+    future=True,
+    pool_size=settings.DB_POOL_SIZE,
+    max_overflow=settings.DB_MAX_OVERFLOW,
+)
 
 SessionLocal = sessionmaker(
     bind=engine,
@@ -64,31 +59,28 @@ def _patch_sessions_user_id() -> None:
     if "user_id" in columns:
         return
 
-    is_postgres = engine.dialect.name == "postgresql"
     with engine.begin() as connection:
         connection.execute(text("ALTER TABLE sessions ADD COLUMN user_id INTEGER"))
         connection.execute(
             text("CREATE INDEX IF NOT EXISTS ix_sessions_user_id ON sessions (user_id)")
         )
-        if is_postgres:
-            # Attach the FK constraint idempotently (SQLite cannot ALTER FKs;
-            # fresh SQLite databases already get it from create_all).
-            connection.execute(
-                text(
-                    """
-                    DO $$
-                    BEGIN
-                        IF NOT EXISTS (
-                            SELECT 1 FROM pg_constraint
-                            WHERE conname = 'fk_sessions_user_id_users'
-                        ) THEN
-                            ALTER TABLE sessions
-                                ADD CONSTRAINT fk_sessions_user_id_users
-                                FOREIGN KEY (user_id) REFERENCES users (id)
-                                ON DELETE SET NULL;
-                        END IF;
-                    END $$;
-                    """
-                )
+        # Attach the FK constraint idempotently (PostgreSQL-only project).
+        connection.execute(
+            text(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conname = 'fk_sessions_user_id_users'
+                    ) THEN
+                        ALTER TABLE sessions
+                            ADD CONSTRAINT fk_sessions_user_id_users
+                            FOREIGN KEY (user_id) REFERENCES users (id)
+                            ON DELETE SET NULL;
+                    END IF;
+                END $$;
+                """
             )
+        )
 

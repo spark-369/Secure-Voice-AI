@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db
 from app.core.config import get_settings
 from app.services.cache import redis_cache
+from app.services.ollama_client import ollama_reachable
 from app.services.rag import knowledge_index
 
 router = APIRouter(tags=["health"])
@@ -28,7 +29,7 @@ async def health() -> dict:
 
 @router.get("/health/ready")
 async def ready(db: Session = Depends(get_db)) -> JSONResponse:
-    """Readiness probe: PostgreSQL, Redis and the vector store."""
+    """Readiness probe: PostgreSQL, Redis, the vector table and Ollama."""
     components: dict[str, str] = {}
 
     try:
@@ -39,6 +40,7 @@ async def ready(db: Session = Depends(get_db)) -> JSONResponse:
 
     components["redis"] = "up" if redis_cache.ping() else "down"
     components["vector_store"] = "up" if knowledge_index.is_available() else "down"
+    components["ollama"] = "up" if ollama_reachable() else "down"
 
     healthy = all(value == "up" for value in components.values())
     return JSONResponse(

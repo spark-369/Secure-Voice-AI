@@ -36,7 +36,7 @@ async def lifespan(app: FastAPI):
         logger.info("Database schema ensured")
 
     if settings.PRELOAD_MODELS:
-        # Warm the models in background threads so startup stays responsive.
+        # Warm the Ollama models in background threads so startup stays responsive.
         def _warm(loader, name: str) -> None:
             try:
                 loader()
@@ -44,12 +44,12 @@ async def lifespan(app: FastAPI):
             except Exception as exc:  # noqa: BLE001
                 logger.warning("%s preload failed: %s", name, exc)
 
-        from app.services.classifier import zero_shot_classifier
+        from app.services.classifier import llm_classifier
         from app.services.llm import llm_engine
 
-        threading.Thread(target=_warm, args=(llm_engine.load, "LLM"), daemon=True).start()
+        threading.Thread(target=_warm, args=(llm_engine.load, "Ollama chat model"), daemon=True).start()
         threading.Thread(
-            target=_warm, args=(zero_shot_classifier.load, "Zero-shot classifier"), daemon=True
+            target=_warm, args=(llm_classifier.load, "Ollama classifier"), daemon=True
         ).start()
 
     yield
@@ -70,7 +70,7 @@ def create_app() -> FastAPI:
         version=settings.VERSION,
         description=(
             "Browser-based autonomous customer care: conversational LLM + RAG "
-            "+ zero-shot alert classification."
+            "+ LLM alert classification."
         ),
         lifespan=lifespan,
         **docs_kwargs,

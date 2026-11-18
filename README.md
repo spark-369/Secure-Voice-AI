@@ -1,11 +1,12 @@
 # SecureVoice AI
 
-**Browser-based autonomous customer care — conversational LLM + RAG + zero-shot alert classification, with a voice-first React UI.**
+**Browser-based autonomous customer care — conversational LLM + RAG + LLM alert classification,
+with a voice-first React UI.**
 
 SecureVoice AI is a full-stack customer-support platform. Customers talk (or type) to an
 autonomous voice agent in the browser; the agent answers using a locally-hosted instruct LLM
-grounded by a RAG knowledge base, while every user utterance is asynchronously classified by a
-zero-shot model to raise **alerts** for the human support team. Staff triage those alerts from an
+(Ollama) grounded by a RAG knowledge base, while every user utterance is asynchronously classified
+to raise **alerts** for the human support team. Staff triage those alerts from an
 agent dashboard; admins manage users and the knowledge base.
 
 Speech recognition (STT) and speech synthesis (TTS) both run **in the browser** via the Web Speech
@@ -41,14 +42,17 @@ API — raw audio never leaves the client; only the recognised text is sent to t
 
 - 🎙️ **Voice-first console** — push-to-talk speech recognition with live interim captions and
   browser TTS playback of every reply (graceful text fallback on unsupported browsers).
-- 🤖 **Autonomous agent** — Qwen2.5-0.5B-Instruct generates concise, grounded replies; a curated
-  system prompt enforces empathy, brevity and safe escalation behaviour.
-- 📚 **RAG knowledge base** — documents are chunked (700 chars / 120 overlap), embedded into an
-  embedded ChromaDB collection (cosine space) and retrieved top-4 with a distance cutoff;
-  retrieval results are Redis-cached.
-- 🛡️ **Zero-shot alerting** — every customer utterance is classified by BART-large-MNLI into one of
-  eight support categories; severity blends the classifier score with keyword heuristics. Alerts
-  above the high-severity threshold surface on the agent dashboard.
+- 🤖 **Autonomous agent** — a local Ollama server runs `Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M`;
+  replies are generated with a **structured-output schema** (JSON-constrained) under a curated
+  system prompt that enforces empathy, brevity and safe escalation behaviour.
+- 📚 **RAG knowledge base** — documents are chunked (700 chars / 120 overlap), embedded by the
+  local Ollama embedding model (`Qwen3-Embedding-0.6B-GGUF:Q8_0`) and stored in a PostgreSQL
+  `knowledge_chunks` table; retrieval is top-4 cosine similarity with a distance cutoff and
+  Redis-cached results — **no separate vector database**.
+- 🛡️ **LLM alert classification** — every customer utterance is classified by the same Ollama chat
+  model (JSON-schema-constrained category + confidence) into one of eight support categories;
+  severity blends the verdict with keyword heuristics. Alerts above the high-severity threshold
+  surface on the agent dashboard (keyword `heuristic_classify` is the fallback).
 - 🔐 **JWT auth + RBAC** — access/refresh token pair (bcrypt password hashing), three roles
   (`customer` / `agent` / `admin`) enforced by dependency guards on every protected route.
 - ⚡ **Background processing** — Celery (Redis broker) handles alert classification and knowledge
@@ -80,9 +84,7 @@ flowchart LR
   WORKER["Celery worker"]
   PG[("PostgreSQL 16")]
   REDIS[("Redis 7")]
-  CHROMA[("ChromaDB (embedded)")]
-  LLM["Qwen2.5-0.5B-Instruct"]
-  ZSC["BART-large-MNLI"]
+  OLLAMA["Ollama server :11434<br/>(chat + embedding GGUF models)"]
 
   Browser -- "REST + WSS (/api)" --> PROXY
   PROXY --> REST
@@ -93,13 +95,11 @@ flowchart LR
   WSS --> SVC
   SVC --> PG
   SVC --> REDIS
-  SVC --> CHROMA
-  SVC --> LLM
+  SVC --> OLLAMA
   REST -- "enqueue tasks" --> REDIS
   REDIS --> WORKER
   WORKER --> PG
-  WORKER --> CHROMA
-  WORKER --> ZSC
+  WORKER --> OLLAMA
 ```
 
 **Conversation pipeline** (one user utterance → one reply):
@@ -108,9 +108,11 @@ flowchart LR
 2. Text is sanitised: control characters stripped, whitespace collapsed, capped at 2 000 chars.
 3. The user turn is persisted; the last 8 turns are loaded as conversation history.
 4. The RAG index is queried (Redis-cached); relevant excerpts are formatted into the system prompt.
-5. The Qwen chat engine generates the reply **in a threadpool** (the event loop stays responsive).
+5. The Ollama chat engine generates the reply **in a threadpool** (the event loop stays responsive),
+   with the response constrained to a structured-output JSON schema.
 6. The assistant turn is persisted with its latency and model name.
-7. A Celery task classifies the utterance zero-shot and creates an `Alert` row.
+7. A Celery task classifies the utterance (Ollama structured output; heuristic fallback) and creates
+   an `Alert` row.
 8. The reply (text, source citations, latency, `alert_pending`) is returned and spoken via TTS.
 
 ## Tech stack
@@ -119,13 +121,13 @@ flowchart LR
 | --- | --- | --- |
 | Backend framework | FastAPI ≥ 0.115 · Starlette · Uvicorn | App factory in `backend/app/main.py` (`app.main:app`) |
 | Language | Python 3.11 | Fully annotated, `from __future__ import annotations` everywhere |
-| Database | PostgreSQL 16 · SQLAlchemy 2.0 (ORM 2.0 style) | SQLite fallback for zero-infra smoke tests |
+| Database | PostgreSQL 16 · SQLAlchemy 2.0 (ORM 2.0 style) | Local PostgreSQL database, PostgreSQL-only |
 | Cache / broker | Redis 7 | JSON cache, RAG result cache, rate limiting, Celery broker + result backend |
 | Task queue | Celery ≥ 5.4 | JSON-only, `task_acks_late`, prefetch = 1 |
 | Auth | PyJWT (HS256) · bcrypt | Bearer tokens; access 30 min, refresh 7 days |
-| LLM | `Qwen/Qwen2.5-0.5B-Instruct` via Transformers + PyTorch | Lazy thread-safe singleton, CPU or CUDA |
-| Classifier | `facebook/bart-large-mnli` (zero-shot pipeline) | Runs inside the Celery worker only |
-| Vector store | ChromaDB ≥ 0.5 (embedded, persistent) | Cosine HNSW, collection `knowledge_base` |
+| LLM | `hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M` via the Ollama client | Structured-output JSON schemas; no torch/transformers in the app |
+| Classifier | Same Ollama chat model, classification JSON schema | Runs inside the Celery worker only; heuristic fallback |
+| Vector search | Ollama `hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0` + PostgreSQL `knowledge_chunks` table | In-process cosine similarity; no external vector DB |
 | Frontend | React 19 · Vite 8 | SPA in `frontend/` |
 | Routing | react-router-dom 7 | Auth + role guards on nested routes |
 | Styling | Tailwind CSS 3 (PostCSS + Autoprefixer) | Dark slate theme, custom `pulse-ring` animation |
@@ -150,16 +152,16 @@ flowchart LR
 │   │   │   └── v1/                  # auth, users, sessions, chat, alerts, knowledge, health, ws, router
 │   │   ├── core/                    # config.py (pydantic-settings), logging.py
 │   │   ├── db/                      # base.py (Base + TimestampMixin), session.py (engine, init_db)
-│   │   ├── models/                  # User, ConversationSession, Message, Alert, KnowledgeDocument
+│   │   ├── models/                  # User, ConversationSession, Message, Alert, KnowledgeDocument, KnowledgeChunk
 │   │   ├── schemas/                 # Pydantic request/response models
-│   │   ├── services/                # auth, cache, llm, classifier, rag, conversation, alerts, customers
+│   │   ├── services/                # auth, cache, ollama_client, llm, classifier, rag, conversation, alerts, customers
 │   │   ├── tasks/                   # celery_app.py + tasks.py (5 tasks)
 │   │   ├── utils/text.py            # sanitisation, chunking, prompt assembly, severity heuristics
 │   │   └── data/knowledge_seed.json # 9 starter knowledge-base documents
 │   ├── scripts/                     # migrate_auth.py, seed_knowledge.py (admin-gated CLI)
-│   ├── tests/                       # pytest units (auth + text utils; ML stack not required)
+│   ├── tests/                       # pytest units (auth + text utils; no Ollama or DB required)
 │   ├── requirements.txt
-│   └── Dockerfile                   # python:3.11-slim, CPU torch wheels, non-root user
+│   └── Dockerfile                   # python:3.11-slim, thin client image, non-root user
 ├── frontend/
 │   ├── src/
 │   │   ├── main.jsx                 # React root: BrowserRouter → Toast → Auth → App
@@ -171,7 +173,7 @@ flowchart LR
 │   ├── package.json · package-lock.json
 │   └── Dockerfile                   # node build stage → nginx runtime
 ├── nginx/nginx.conf                 # reverse proxy for the production web tier
-├── docker-compose.yml               # local dev infrastructure only (PostgreSQL + Redis)
+├── docker-compose.yml               # local dev infra (PostgreSQL + Redis; optional Ollama profile)
 └── README.md
 ```
 
@@ -192,9 +194,10 @@ The backend is a strictly layered FastAPI application:
 | Utilities | `app/utils/text.py` | Dependency-free text helpers (unit-testable without the ML stack) |
 | Configuration | `app/core/config.py` | Typed 12-factor settings loaded from env / `.env` (cached singleton) |
 
-Heavy ML/IO resources are **lazy, thread-safe singletons** — `llm_engine`, `zero_shot_classifier`,
-`knowledge_index` (ChromaDB) and `redis_cache` — so `torch`, `transformers` and `chromadb` are only
-imported on first use and the API can boot and answer health checks before models are downloaded.
+Heavy AI/IO resources are **lazy, thread-safe singletons** — `llm_engine`, `llm_classifier`,
+`knowledge_index` (PostgreSQL-backed vectors) and `redis_cache` — so the `ollama` client only
+contacts the server on first use and the API can boot and answer health checks before any model
+is pulled.
 
 Entry point `backend/app/main.py` → `create_app()`:
 
@@ -235,8 +238,9 @@ metadata uses deterministic constraint naming (Alembic-friendly).
 | `users` | `id` int PK · `email` varchar(255) unique + indexed · `hashed_password` (bcrypt) · `full_name` varchar(120) nullable · `role` varchar(16) indexed, default `customer` · `is_active` bool, default true |
 | `sessions` | `id` varchar(36) UUID PK · `user_id` FK → `users.id` ON DELETE SET NULL, indexed · `customer_name` varchar(120) nullable · `channel` varchar(32) default `voice` · `language` varchar(16) default `en-US` · `status` varchar(16) default `active` (`active` \| `closed`) |
 | `messages` | `id` int PK · `session_id` FK → `sessions.id` ON DELETE CASCADE, indexed · `role` varchar(16) (`user` \| `assistant`) · `content` text · `latency_ms` int nullable · `model` varchar(128) nullable |
-| `alerts` | `id` int PK · `session_id` FK → `sessions.id` ON DELETE CASCADE, indexed · `message_id` FK → `messages.id` ON DELETE SET NULL · `category` varchar(64) indexed · `severity` float · `confidence` float · `scores` JSON · `summary` text nullable · `status` varchar(16) indexed, default `open` (`open` \| `acknowledged` \| `resolved`) · `provider` varchar(32) default `zero-shot` (`zero-shot` \| `heuristic` \| `manual`) |
+| `alerts` | `id` int PK · `session_id` FK → `sessions.id` ON DELETE CASCADE, indexed · `message_id` FK → `messages.id` ON DELETE SET NULL · `category` varchar(64) indexed · `severity` float · `confidence` float · `scores` JSON · `summary` text nullable · `status` varchar(16) indexed, default `open` (`open` \| `acknowledged` \| `resolved`) · `provider` varchar(32) default `ollama` (`ollama` \| `heuristic` \| `manual`) |
 | `knowledge_documents` | `id` int PK · `title` varchar(200) · `source` varchar(200) default `""` · `content` text · `chunk_count` int |
+| `knowledge_chunks` | `id` int PK · `document_id` FK → `knowledge_documents.id` ON DELETE CASCADE, indexed · `chunk_index` int · `content` text · `title` varchar(200) · `source` varchar(200) · `embedding` JSONB (float vector from the Ollama embedding model) |
 
 Schema management: `Base.metadata.create_all` runs at startup when
 `CREATE_TABLES_ON_STARTUP=true`, followed by an idempotent dev-time patch that adds
@@ -248,35 +252,45 @@ is safe to re-run.
 
 **LLM engine — `app/services/llm.py`**
 
-- Model `Qwen/Qwen2.5-0.5B-Instruct` (configurable via `LLM_MODEL_NAME`); fp16 on CUDA, fp32 on
-  CPU; device resolution honours `DEVICE=auto|cpu|cuda`.
-- Thread-safe lazy singleton. `generate()` applies the model chat template and samples with
-  `temperature=0.7` (floor 0.05), `top_p=0.9`, `repetition_penalty=1.1`, `max_new_tokens=220`
-  (all configurable).
-- Generation runs via `run_in_threadpool` so the async event loop is never blocked; any failure is
-  replaced by the static `FALLBACK_REPLY` — the conversation never breaks.
+- Model `hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M` (configurable via `LLM_MODEL_NAME`),
+  served by the local Ollama server at `OLLAMA_BASE_URL` (default `http://localhost:11434`) and
+  accessed through the `ollama` Python client.
+- Thread-safe lazy singleton. `generate()` calls `client.chat(..., format=REPLY_SCHEMA)` — a
+  **structured-output JSON schema** (`{"reply": "..."}`) with `temperature=0.7` (floor 0.05),
+  `top_p=0.9`, `repeat_penalty=1.1`, `num_predict=220` (all configurable). `chat_structured()`
+  exposes the same path for arbitrary schemas. Parsed replies are sanitised afterwards — markdown
+  fences stripped, responses truncated at `num_predict` repaired, stray quotes/newlines
+  normalised — so the chat UI and TTS only ever receive clean plain text, never raw JSON.
+- `load()` verifies the server and pulls the model once if missing (`PRELOAD_MODELS=true` warms
+  it at startup); generation runs via `run_in_threadpool` so the async event loop is never
+  blocked, and any failure is replaced by the static `FALLBACK_REPLY` — the conversation never
+  breaks.
 
-**Zero-shot classifier — `app/services/classifier.py`**
+**Classifier — `app/services/classifier.py`**
 
-- Model `facebook/bart-large-mnli` through the `zero-shot-classification` pipeline, loaded **only
-  inside the Celery worker** (the API process never pays the model-loading cost).
+- Uses the same Ollama chat model with a **classification JSON schema** (enum `category` +
+  numeric `confidence`), loaded **only inside the Celery worker** (the API process never pays
+  the inference cost).
 - Candidate labels: `billing`, `technical issue`, `account access`, `refund or cancellation`,
   `product question`, `complaint`, `urgent escalation`, `general inquiry`.
-- Output per message: top label, confidence, full score map and a blended severity from
+- Output per message: top label, confidence, score map and a blended severity from
   `estimate_severity()` — category baseline + keyword boosts (legal threats, fraud, "cancel my
   account", … raise severity; medium keywords such as "refund", "broken" cap it at ≥ 0.5; low
   classifier confidence < 0.4 dampens it), clamped to 0–1.
-- If the model cannot load, the Celery task degrades to `heuristic_classify()` (keyword mapping,
-  provider `heuristic`) so **alerts are never lost**.
+- If Ollama is unreachable or returns an off-enum category, the Celery task degrades to
+  `heuristic_classify()` (keyword mapping, provider `heuristic`) so **alerts are never lost**.
 
 **RAG index — `app/services/rag.py`**
 
-- Embedded ChromaDB `PersistentClient` at `CHROMA_PERSIST_DIR` (default `./data/chroma` relative to
-  the backend working directory), collection `RAG_COLLECTION` (`knowledge_base`), cosine space.
+- Vectors are produced by the Ollama embedding model `EMBEDDING_MODEL_NAME`
+  (`hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0`) and stored in the PostgreSQL `knowledge_chunks`
+  table (`embedding JSONB`) — there is **no separate vector database**.
 - **Single-writer pattern**: all writes (ingest/reindex/delete) are performed by the Celery worker;
   the API process only reads and queries.
-- Query flow: top-4 hits (`RAG_TOP_K`) filtered by `RAG_MAX_DISTANCE=1.2` cosine distance,
-  cached in Redis under `rag:<sha1(text)>` with `CACHE_TTL_SECONDS=300`.
+- Query flow: embed the query, compute plain-python cosine similarity against every stored chunk
+  (cosine distance = 1 − similarity, identical semantics to the previous ChromaDB store),
+  take top-4 (`RAG_TOP_K`) filtered by `RAG_MAX_DISTANCE=1.2`, and cache in Redis under
+  `rag:<sha1(text)>` with `CACHE_TTL_SECONDS=300`.
 - `format_context_block()` renders hits as a numbered excerpt block appended to the system prompt;
   each snippet is capped at 500 chars in the prompt and 180 chars in API responses.
 
@@ -299,10 +313,10 @@ celery -A app.tasks.celery_app:app worker --loglevel=INFO
 
 | Task | Trigger | Retries | Behaviour |
 | --- | --- | --- | --- |
-| `tasks.classify_and_alert` | after every user message | 2 × 5 s | Zero-shot classification → creates an `alerts` row (`provider=zero-shot` or `heuristic`) |
+| `tasks.classify_and_alert` | after every user message | 2 × 5 s | Ollama classification → creates an `alerts` row (`provider=ollama` or `heuristic`) |
 | `tasks.ingest_knowledge` | `POST /knowledge/ingest`, `/knowledge/ingest-default` | 3 × 10 s | Persist `knowledge_documents` row and vector chunks in one transaction |
 | `tasks.reindex_knowledge_document` | `PATCH /knowledge/documents/{id}` | 3 × 5 s | Re-chunk and re-index updated content |
-| `tasks.delete_knowledge_document` | `DELETE /knowledge/documents/{id}` | 3 × 5 s | Remove the document's chunks from ChromaDB and its metadata row |
+| `tasks.delete_knowledge_document` | `DELETE /knowledge/documents/{id}` | 3 × 5 s | Remove the document's vector chunks and its metadata row |
 | `tasks.summarize_session` | manual / ops invocation | — | ≤ 3-sentence CRM-style summary via the LLM |
 
 **Graceful degradation:** when the broker is unreachable, the API falls back in-line — chat skips
@@ -322,7 +336,7 @@ environment variables or a `backend/.env` file (`case_sensitive`, unknown keys i
 | `DEBUG` | `false` | Debug flag |
 | `API_V1_PREFIX` | `/api/v1` | Mount prefix for every router |
 | `LOG_LEVEL` | `INFO` | Root logger level |
-| `DATABASE_URL` | `postgresql+psycopg2://securevoice:securevoice@localhost:5432/securevoice` | SQLAlchemy URL (`sqlite://` allowed for tests) |
+| `DATABASE_URL` | `postgresql+psycopg2://securevoice:securevoice@localhost:5432/securevoice` | SQLAlchemy URL (local PostgreSQL) |
 | `DB_POOL_SIZE` | `10` | PostgreSQL pool size |
 | `DB_MAX_OVERFLOW` | `20` | Pool overflow slots |
 | `DB_ECHO` | `false` | SQL statement echo |
@@ -332,15 +346,14 @@ environment variables or a `backend/.env` file (`case_sensitive`, unknown keys i
 | `RATE_LIMIT_PER_MINUTE` | `60` | Per-IP request budget per fixed minute window |
 | `CELERY_BROKER_URL` | `redis://localhost:6379/1` | Celery broker |
 | `CELERY_RESULT_BACKEND` | `redis://localhost:6379/2` | Celery results |
-| `LLM_MODEL_NAME` | `Qwen/Qwen2.5-0.5B-Instruct` | Hugging Face model id |
-| `CLASSIFIER_MODEL_NAME` | `facebook/bart-large-mnli` | Zero-shot model id |
-| `LLM_MAX_NEW_TOKENS` | `220` | Generation cap |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama server (serves both models) |
+| `OLLAMA_TIMEOUT` | `300` | Client timeout in seconds (CPU inference can be slow) |
+| `LLM_MODEL_NAME` | `hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M` | Ollama chat model (structured output) |
+| `EMBEDDING_MODEL_NAME` | `hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0` | Ollama embedding model (RAG vectors) |
+| `LLM_MAX_NEW_TOKENS` | `220` | Generation cap (Ollama `num_predict`) |
 | `LLM_TEMPERATURE` | `0.7` | Sampling temperature (floor 0.05) |
-| `DEVICE` | `auto` | `auto` \| `cpu` \| `cuda` |
-| `PRELOAD_MODELS` | `false` | Warm LLM + classifier in background threads at startup |
+| `PRELOAD_MODELS` | `false` | Verify/pull the Ollama models in background threads at startup |
 | `HISTORY_WINDOW` | `8` | Chat turns kept in the LLM prompt |
-| `CHROMA_PERSIST_DIR` | `./data/chroma` | Vector store directory (relative to backend cwd) |
-| `RAG_COLLECTION` | `knowledge_base` | Chroma collection name |
 | `RAG_CHUNK_SIZE` | `700` | Chunk size in characters |
 | `RAG_CHUNK_OVERLAP` | `120` | Chunk overlap in characters |
 | `RAG_TOP_K` | `4` | Chunks retrieved per query |
@@ -390,7 +403,7 @@ production). All request/response bodies are JSON; all timestamps are ISO-8601 U
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/health` | Liveness — always cheap, no dependency checks |
-| `GET` | `/health/ready` | Readiness — checks PostgreSQL, Redis and the vector store; `200 ready` or `503 degraded` with per-component status |
+| `GET` | `/health/ready` | Readiness — checks PostgreSQL, Redis, the `knowledge_chunks` table and Ollama; `200 ready` or `503 degraded` with per-component status |
 
 **Sessions** (`sessions.py`, bearer; ownership-aware)
 
@@ -424,7 +437,7 @@ production). All request/response bodies are JSON; all timestamps are ISO-8601 U
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/knowledge/documents` | List ingested documents incl. content and chunk counts |
-| `GET` | `/knowledge/stats` | `{documents, indexed_chunks}` — PostgreSQL count + ChromaDB count |
+| `GET` | `/knowledge/stats` | `{documents, indexed_chunks}` — PostgreSQL counts (documents + embedded chunks) |
 | `PATCH` | `/knowledge/documents/{document_id}` | Update title/source/content; vectors are re-indexed asynchronously |
 | `POST` | `/knowledge/ingest` | Ingest 1–50 documents `{documents: [{title, source?, content}]}` — Celery-queued with synchronous fallback |
 | `POST` | `/knowledge/ingest-default` | Ingest the bundled starter set (`backend/app/data/knowledge_seed.json`, 9 policy documents) |
@@ -492,7 +505,7 @@ production). All request/response bodies are JSON; all timestamps are ISO-8601 U
   "scores": { "billing": 0.81, "complaint": 0.07 },
   "summary": "I was charged twice on my card…",
   "status": "open",
-  "provider": "zero-shot",
+  "provider": "ollama",
   "created_at": "2026-11-18T09:01:12Z"
 }
 ```
@@ -668,7 +681,7 @@ enforces the same rules — the UI only mirrors RBAC.
 ### Prerequisites
 
 - Python 3.11+, Node.js 20+, Docker (for the dev infrastructure)
-- Optional: a CUDA GPU (otherwise torch runs on CPU)
+- [Ollama](https://ollama.com/download) — all AI inference (chat + embeddings) runs there
 
 ### 1. Configure the environment
 
@@ -690,10 +703,10 @@ CELERY_RESULT_BACKEND=redis://localhost:6379/2
 # --- Security ---
 JWT_SECRET_KEY=change-me-in-production
 
-# --- Models (first run downloads them from Hugging Face) ---
-LLM_MODEL_NAME=Qwen/Qwen2.5-0.5B-Instruct
-CLASSIFIER_MODEL_NAME=facebook/bart-large-mnli
-DEVICE=auto
+# --- Ollama models ---
+OLLAMA_BASE_URL=http://localhost:11434
+LLM_MODEL_NAME=hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M
+EMBEDDING_MODEL_NAME=hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
 # PRELOAD_MODELS=true
 
 # --- App ---
@@ -707,22 +720,30 @@ CORS_ORIGINS=["http://localhost:5173"]
 docker compose up -d        # PostgreSQL :5432 + Redis :6379, named volumes persist data
 ```
 
-> Note: the voice console's offline banner mentions `make infra`; with the current repository the
-> equivalent command is `docker compose up -d`.
+### 3. Pull the Ollama models (once)
 
-### 3. Run the backend
+```bash
+ollama pull hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M
+ollama pull hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
+# `ollama serve` runs automatically with the desktop app; verify with `ollama list`
+```
+
+> Prefer containerised Ollama? `docker compose --profile ollama up -d` starts an `ollama/ollama`
+> service on :11434 (pull the models inside it with `docker compose exec ollama ollama pull …`).
+
+### 4. Run the backend
 
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -r requirements.txt                       # GPU hosts: install the CUDA torch build
+pip install -r requirements.txt                       # no torch/transformers needed
 uvicorn app.main:app --reload --port 8000
 ```
 
 Tables are created automatically on first boot (`CREATE_TABLES_ON_STARTUP`). Swagger UI:
 <http://localhost:8000/docs>.
 
-### 4. Run the Celery worker (recommended, optional)
+### 5. Run the Celery worker (recommended, optional)
 
 ```bash
 # from backend/ with the venv active
@@ -732,7 +753,7 @@ celery -A app.tasks.celery_app:app worker --loglevel=INFO
 Without a worker the app still works — alert classification is skipped and knowledge operations run
 synchronously.
 
-### 5. Run the frontend
+### 6. Run the frontend
 
 ```bash
 cd frontend
@@ -742,14 +763,14 @@ npm run dev        # http://localhost:5173 — /api is proxied to :8000 (REST + 
 
 Other scripts: `npm run build` (production bundle to `dist/`), `npm run preview`, `npm run lint`.
 
-### 6. Seed the knowledge base (admin)
+### 7. Seed the knowledge base (admin)
 
 - **UI/API** — sign in as an admin → Knowledge page → *Seed default knowledge base*
   (or `POST /api/v1/knowledge/ingest-default`).
 - **CLI** — `python -m scripts.seed_knowledge --email admin@example.com` (password prompted;
   the script enforces the same admin RBAC rules as the API).
 
-### 7. Bootstrap the first admin
+### 8. Bootstrap the first admin
 
 Open registration always creates `customer` accounts, so promote the first admin manually:
 
@@ -784,26 +805,27 @@ docker build -f backend/Dockerfile  -t securevoice-backend  .
 docker build -f frontend/Dockerfile -t securevoice-frontend .
 ```
 
-- **Backend** — `python:3.11-slim`, CPU torch wheels (swap for CUDA on GPU hosts), non-root
-  `appuser`, `HF_HOME` model cache, `HEALTHCHECK` on `/api/v1/health`, and
-  `uvicorn app.main:app --workers 1` (the LLM is in-process — scale replicas, not workers). The
-  same image runs the worker: `celery -A app.tasks.celery_app:app worker`.
+- **Backend** — `python:3.11-slim` (a thin client image — all model weights live on the Ollama
+  server), non-root `appuser`, `HEALTHCHECK` on `/api/v1/health`, and
+  `uvicorn app.main:app --workers 1`. Point `OLLAMA_BASE_URL` at the Ollama host
+  (`http://host.docker.internal:11434` when Ollama runs on the Docker host). The same image runs
+  the worker: `celery -A app.tasks.celery_app:app worker`.
 - **Frontend** — Node 20 build stage → `nginx:1.27-alpine` serving the hashed `dist/` bundle.
   `nginx/nginx.conf` reverse-proxies `/api/` (REST **and** WebSocket upgrade) plus the docs routes
   to `backend:8000`, applies gzip, a 30 r/s request-limit zone, security headers, immutable asset
   caching and an SPA fallback, and health-checks `/api/v1/health`.
 - Set `ENVIRONMENT=production` to disable `/docs`, `/redoc` and `/openapi.json`.
 - **Checklist**: strong `JWT_SECRET_KEY`; TLS terminated at the proxy; tight `CORS_ORIGINS`;
-  persistent volume for `CHROMA_PERSIST_DIR` (the vector store is embedded — mount it, or move to a
-  managed vector database at scale); tune `RATE_LIMIT_PER_MINUTE`; adopt Alembic migrations instead
-  of startup `create_all`; supply real `POSTGRES_*` credentials.
+  scale Ollama (or a GPU host) independently of the stateless API containers;
+  tune `RATE_LIMIT_PER_MINUTE`; adopt Alembic migrations instead of startup `create_all`; supply
+  real `POSTGRES_*` credentials.
 
 ## Observability & health
 
 | Probe | Endpoint | Checks | Result |
 | --- | --- | --- | --- |
 | Liveness | `GET /api/v1/health` | none (always cheap) | `200` with service metadata |
-| Readiness | `GET /api/v1/health/ready` | PostgreSQL `SELECT 1`, Redis `PING`, Chroma count | `200 ready` or `503 degraded` + per-component status |
+| Readiness | `GET /api/v1/health/ready` | PostgreSQL `SELECT 1`, Redis `PING`, `knowledge_chunks` count, Ollama `list` | `200 ready` or `503 degraded` + per-component status |
 | Tracing | every response | `X-Request-ID` header + structured request log line | correlation across logs |
 | Frontend | `StatusPill` | polls `/health` every 30 s | online/offline indicator |
 
@@ -813,9 +835,9 @@ docker build -f frontend/Dockerfile -t securevoice-frontend .
 | --- | --- |
 | Redis down | Cache misses, rate limiting opens, Celery enqueue skipped (`alert_pending: false`) |
 | Broker down (knowledge ops) | Synchronous fallback processing, noted in the response |
-| ChromaDB down | RAG returns no context; the LLM answers ungrounded |
+| Ollama unreachable (RAG) | Embeddings fail → RAG returns no context; the LLM answers ungrounded |
 | LLM failure | Static `FALLBACK_REPLY` is returned and persisted with `model: "fallback"` |
-| Zero-shot model failure | Keyword `heuristic_classify` produces the alert instead |
+| Ollama classification failure | Keyword `heuristic_classify` produces the alert instead |
 
 ## Security notes
 
@@ -836,7 +858,8 @@ docker build -f frontend/Dockerfile -t securevoice-frontend .
 - Tokens (and the profile) live in `localStorage` — an XSS would expose them; consider
   http-only cookies for high-security deployments.
 - Refresh tokens are not rotated and there is no revocation/blacklist (`jti` is issued but unused).
-- The embedded ChromaDB enforces a single-writer pattern via Celery and lives on local disk.
+- Embeddings and chat are served by Ollama; vectors live in PostgreSQL `knowledge_chunks` and
+  document deletes cascade there, keeping the index and metadata consistent.
 - Schema changes rely on `create_all` + dev-time patches locally; use Alembic in production.
 
 

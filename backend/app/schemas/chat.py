@@ -37,5 +37,5 @@ class ChatReply(BaseModel):
     sources: list[KnowledgeSource] = Field(default_factory=list)
     alert_pending: bool = Field(
         default=False,
-        description="True when zero-shot alert classification was queued with Celery",
+        description="True when alert classification was queued with Celery",
     )

@@ -42,18 +42,17 @@ class Settings(BaseSettings):
     CELERY_BROKER_URL: str = "redis://localhost:6379/1"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/2"
 
-    # --- AI models ------------------------------------------------------------
-    LLM_MODEL_NAME: str = "Qwen/Qwen2.5-0.5B-Instruct"
-    CLASSIFIER_MODEL_NAME: str = "facebook/bart-large-mnli"
-    LLM_MAX_NEW_TOKENS: int = 220
+    # --- AI inference (local Ollama server: chat + embeddings) --------------
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_TIMEOUT: int = 300  # seconds; small models can be slow on CPU
+    LLM_MODEL_NAME: str = "hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M"
+    EMBEDDING_MODEL_NAME: str = "hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0"
+    LLM_MAX_NEW_TOKENS: int = 220  # mapped to num_predict in Ollama options
     LLM_TEMPERATURE: float = 0.7
-    DEVICE: str = "auto"  # auto | cpu | cuda
     PRELOAD_MODELS: bool = False
     HISTORY_WINDOW: int = 8  # chat turns kept in the LLM prompt
 
-    # --- RAG (python-embedded ChromaDB) ---------------------------------------
-    CHROMA_PERSIST_DIR: str = "./data/chroma"
-    RAG_COLLECTION: str = "knowledge_base"
+    # --- RAG (Ollama embeddings + PostgreSQL chunk table) ----------------------
     RAG_CHUNK_SIZE: int = 700
     RAG_CHUNK_OVERLAP: int = 120
     RAG_TOP_K: int = 4

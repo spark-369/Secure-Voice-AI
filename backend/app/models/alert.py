@@ -1,4 +1,4 @@
-"""Operational alerts raised from zero-shot classification of user messages."""
+"""Operational alerts raised from LLM classification of user messages."""
 from __future__ import annotations
 
 from typing import Any
@@ -32,7 +32,7 @@ class Alert(TimestampMixin, Base):
     status: Mapped[str] = mapped_column(
         String(16), default="open", index=True, nullable=False
     )  # open | acknowledged | resolved
-    provider: Mapped[str] = mapped_column(String(32), default="zero-shot", nullable=False)
+    provider: Mapped[str] = mapped_column(String(32), default="ollama", nullable=False)
 
     # Many-to-one navigation to the owning conversation (and its customer).
     session: Mapped["ConversationSession"] = relationship(lazy="select")

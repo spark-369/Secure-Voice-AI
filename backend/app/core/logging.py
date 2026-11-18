@@ -8,7 +8,7 @@ _CONFIGURED = False
 
 _FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s | %(message)s"
 
-_NOISY_LOGGERS = ("uvicorn.access", "chromadb", "httpx", "urllib3", "sentence_transformers")
+_NOISY_LOGGERS = ("uvicorn.access", "httpx", "urllib3")
 
 
 def configure_logging(level: str = "INFO") -> None:

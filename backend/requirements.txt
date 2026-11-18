@@ -1,7 +1,8 @@
 # ============================================================
 # SecureVoice AI — backend dependencies (Python 3.11)
-# Torch is installed with the CPU wheel index inside the Dockerfile
-# to keep the image small; on GPU hosts install the CUDA build.
+# All AI inference (chat + embeddings) is delegated to a local
+# Ollama server, so this app stays free of torch/transformers
+# and separate vector databases.
 # ============================================================
 
 # --- Web / API -------------------------------------------------
@@ -23,10 +24,8 @@ celery>=5.4
 bcrypt>=4.1
 PyJWT>=2.8
 
-# --- AI / ML (Transformers + vector store) ---------------------
-transformers>=4.44
-torch>=2.2
-chromadb>=0.5
+# --- AI inference (Ollama client: structured chat + embeddings) ---
+ollama>=0.4
 
 # --- Utilities --------------------------------------------------
 httpx>=0.27

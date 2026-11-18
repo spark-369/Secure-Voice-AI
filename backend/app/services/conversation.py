@@ -218,7 +218,7 @@ def process_user_message(
 
 
 def _enqueue_classification(message_id: int, session_id: str, text: str) -> bool:
-    """Queue zero-shot classification on the Celery worker."""
+    """Queue alert classification on the Celery worker."""
     try:
         from app.tasks.tasks import classify_and_alert
 

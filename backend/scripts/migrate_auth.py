@@ -1,8 +1,6 @@
 """One-off migration adding auth columns/tables to an existing local database.
 
-Safe to run multiple times. The SQLite fallback note applies only to the
-zero-infra dev mode (simply delete the DB file there and let startup recreate
-the schema); PostgreSQL gets a proper in-place ALTER.
+Safe to run multiple times: PostgreSQL gets proper idempotent in-place ALTERs.
 """
 from __future__ import annotations
 
@@ -18,13 +16,6 @@ def main() -> None:
 
     # Creates the new `users` table (and any other missing tables).
     init_db()
-
-    if get_settings().DATABASE_URL.startswith("sqlite"):
-        print(
-            "SQLite backend: delete the dev database file and restart the API "
-            "so the schema (incl. sessions.user_id) is recreated."
-        )
-        return
 
     with engine.begin() as connection:
         connection.execute(

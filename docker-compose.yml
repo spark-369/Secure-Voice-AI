@@ -44,6 +44,29 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # Optional local Ollama server (all AI inference happens here).
+  # Start it with:  docker compose --profile ollama up -d
+  # then pull the two models once:
+  #   docker compose exec ollama ollama pull hf.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF:Q4_K_M
+  #   docker compose exec ollama ollama pull hf.co/Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    # GPU hosts: uncomment the block below to use the NVIDIA runtime.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    restart: unless-stopped
+
 volumes:
   postgres_data:
   redis_data:
+  ollama_data:

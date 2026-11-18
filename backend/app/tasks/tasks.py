@@ -32,7 +32,7 @@ def _ingest_documents_impl(documents: list[dict]) -> dict:
             )
             db.add(obj)
             db.flush()  # assigns obj.id before the vector write
-            knowledge_index.index_chunks(obj.id, obj.title, obj.source, chunks)
+            knowledge_index.index_chunks(obj.id, obj.title, obj.source, chunks, db=db)
             ingested += 1
         db.commit()
         logger.info("Ingested %s knowledge document(s)", ingested)
@@ -48,7 +48,7 @@ def _ingest_documents_impl(documents: list[dict]) -> dict:
     name="tasks.ingest_knowledge", bind=True, max_retries=3, default_retry_delay=10
 )
 def ingest_knowledge(self, documents: list[dict]) -> dict:
-    """Chunk + embed documents into ChromaDB and persist metadata rows."""
+    """Chunk + embed documents into PostgreSQL and persist metadata rows."""
     try:
         return _ingest_documents_impl(documents)
     except Exception as exc:
@@ -60,19 +60,19 @@ def ingest_knowledge(self, documents: list[dict]) -> dict:
     name="tasks.classify_and_alert", bind=True, max_retries=2, default_retry_delay=5
 )
 def classify_and_alert(self, message_id: int, session_id: str, text: str) -> dict:
-    """Zero-shot classification of one user message; creates an Alert row."""
+    """Classify one user message and create an Alert row."""
     from app.core.config import get_settings
     from app.db.session import SessionLocal
     from app.models import Alert
-    from app.services.classifier import zero_shot_classifier
+    from app.services.classifier import llm_classifier
     from app.utils.text import heuristic_classify
 
     db = SessionLocal()
     try:
         try:
-            result = zero_shot_classifier.classify(text)
+            result = llm_classifier.classify(text)
         except Exception:  # noqa: BLE001 - degrade to heuristics, never lose alerts
-            logger.exception("Zero-shot classifier unavailable; using heuristics")
+            logger.exception("Ollama classifier unavailable; using heuristics")
             result = heuristic_classify(text)
 
         alert = Alert(
@@ -83,9 +83,20 @@ def classify_and_alert(self, message_id: int, session_id: str, text: str) -> dic
             confidence=result["confidence"],
             scores=result.get("scores", {}),
             summary=text[:500],
-            provider=result.get("provider", "zero-shot"),
+            provider=result.get("provider", "heuristic"),
         )
         db.add(alert)
+        db.flush()  # assigns alert.id while the transaction is still open
+        # Build the result BEFORE committing: if anything raises here, the
+        # rollback discards the alert and the Celery retry starts clean
+        # (no duplicate alerts for the same message).
+        result = {
+            "alert_id": alert.id,
+            "category": alert.category,
+            "severity": alert.severity,
+            "confidence": alert.confidence,
+            "high_severity": alert.severity >= get_settings().ALERT_HIGH_SEVERITY,
+        }
         db.commit()
         logger.info(
             "Alert #%s created (category=%s severity=%s)",
@@ -93,13 +104,7 @@ def classify_and_alert(self, message_id: int, session_id: str, text: str) -> dic
             alert.category,
             alert.severity,
         )
-        return {
-            "alert_id": alert.id,
-            "category": alert.category,
-            "severity": alert.severity,
-            "confidence": alert.confidence,
-            "high_severity": alert.severity >= get_settings().ALERT_HIGH_SEVERITY,
-        }
+        return result
     except Exception as exc:
         db.rollback()
         logger.exception("classify_and_alert failed")
@@ -115,7 +120,7 @@ def classify_and_alert(self, message_id: int, session_id: str, text: str) -> dic
     default_retry_delay=5,
 )
 def delete_knowledge_document(self, document_id: int) -> dict:
-    """Remove a document's chunks from ChromaDB and its metadata row."""
+    """Remove a document's chunks from the vector table and its metadata row."""
     from app.db.session import SessionLocal
     from app.models import KnowledgeDocument
     from app.services.rag import knowledge_index
@@ -125,7 +130,7 @@ def delete_knowledge_document(self, document_id: int) -> dict:
         obj = db.get(KnowledgeDocument, document_id)
         if obj is None:
             return {"deleted": False}
-        knowledge_index.delete_document(document_id)
+        knowledge_index.delete_document(document_id, db=db)
         db.delete(obj)
         db.commit()
         return {"deleted": True}

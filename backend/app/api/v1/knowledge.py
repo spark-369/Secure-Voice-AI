@@ -41,7 +41,7 @@ def stats(
     _viewer: User = Depends(require_agent),
     db: Session = Depends(get_db),
 ) -> KnowledgeStatsOut:
-    """PostgreSQL document count + ChromaDB indexed chunk count."""
+    """PostgreSQL document count + indexed chunk count."""
     total = db.query(KnowledgeDocument).count()
     return KnowledgeStatsOut(documents=total, indexed_chunks=knowledge_index.count())
 
@@ -120,7 +120,7 @@ def _dispatch_ingest(documents: list[dict]) -> KnowledgeIngestOut:
     dependencies=[Depends(require_admin)],
 )
 def ingest(payload: KnowledgeIngestRequest) -> KnowledgeIngestOut:
-    """Ingest documents into PostgreSQL + ChromaDB (admin role required)."""
+    """Ingest documents into PostgreSQL (documents + embedded chunks)."""
     return _dispatch_ingest([doc.model_dump() for doc in payload.documents])
 
 
@@ -146,7 +146,7 @@ def ingest_default() -> KnowledgeIngestOut:
     dependencies=[Depends(require_admin)],
 )
 def delete_document(document_id: int) -> Response:
-    """Delete a document's chunks from ChromaDB and its metadata row (admin)."""
+    """Delete a document's vector chunks and metadata row (admin)."""
     try:
         from app.tasks.tasks import delete_knowledge_document
 
@@ -159,7 +159,7 @@ def delete_document(document_id: int) -> Response:
         try:
             obj = db_local.get(KnowledgeDocument, document_id)
             if obj is not None:
-                knowledge_index.delete_document(document_id)
+                knowledge_index.delete_document(document_id, db=db_local)
                 db_local.delete(obj)
                 db_local.commit()
         finally:

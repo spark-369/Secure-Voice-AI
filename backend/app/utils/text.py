@@ -154,7 +154,7 @@ def estimate_severity(
 
 
 def heuristic_classify(text: str) -> dict:
-    """Keyword-only classifier used when the zero-shot model is unavailable."""
+    """Keyword-only classifier used when the LLM classifier is unavailable."""
     lowered = (text or "").lower()
     category = "general inquiry"
     for keywords, mapped in _KEYWORD_CATEGORY_MAP:

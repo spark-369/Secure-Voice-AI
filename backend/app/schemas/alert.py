@@ -26,7 +26,7 @@ class AlertOut(BaseModel):
     scores: dict[str, Any] = Field(default_factory=dict)
     summary: str | None = None
     status: str
-    provider: str = "zero-shot"
+    provider: str = "ollama"
     created_at: datetime
 
 
